@@ -1,0 +1,19 @@
+# Manipulación de Datos
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Preprocesamiento de Lenguaje Natural (Fase 1)
+nltk>=3.8.1
+spacy>=3.7.0
+
+# Machine Learning y Modelado de Tópicos
+scikit-learn>=1.3.0
+bertopic>=0.16.0
+
+# Modelos de Lenguaje (Sentimientos y Similitud Semántica)
+transformers>=4.35.0
+sentence-transformers>=2.2.2
+torch>=2.1.0
+
+# Visualización Interactiva
+plotly>=5.18.0
