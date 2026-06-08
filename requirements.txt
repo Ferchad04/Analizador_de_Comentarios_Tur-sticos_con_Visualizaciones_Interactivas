@@ -1,18 +1,26 @@
-# Manipulación de Datos
+# Manipulación y Operaciones Matemáticas
 pandas>=2.0.0
 numpy>=1.24.0
-joblib>=1.3.0
 
-# Preprocesamiento de Lenguaje Natural
+# Preprocesamiento de Lenguaje Natural (NLP)
 nltk>=3.8.1
 
-# Machine Learning y Reducción de Dimensionalidad
+# Machine Learning y Métricas
 scikit-learn>=1.3.0
-hdbscan>=0.8.33
 
-# Modelos de Lenguaje (Vectores Semánticos)
+# Modelos de Lenguaje (Sentimientos y Embeddings Locales)
+transformers>=4.35.0
 sentence-transformers>=2.2.2
+torch>=2.1.0
 
-# Visualización Interactiva y Grafos
+# Clustering Espacial y Reducción de Dimensionalidad
+hdbscan>=0.8.33
+umap-learn>=0.5.5
+
+# Visualización y Grafos Semánticos
 plotly>=5.18.0
-networkx>=3.2.0
+networkx>=3.1
+
+# Utilidades de Interfaz de Terminal
+tqdm>=4.66.0
+pyarrow>=12.0.0
