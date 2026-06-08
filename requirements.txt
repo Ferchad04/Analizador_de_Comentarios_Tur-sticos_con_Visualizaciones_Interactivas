@@ -1,19 +1,18 @@
 # Manipulación de Datos
 pandas>=2.0.0
 numpy>=1.24.0
+joblib>=1.3.0
 
-# Preprocesamiento de Lenguaje Natural (Fase 1)
+# Preprocesamiento de Lenguaje Natural
 nltk>=3.8.1
-spacy>=3.7.0
 
-# Machine Learning y Modelado de Tópicos
+# Machine Learning y Reducción de Dimensionalidad
 scikit-learn>=1.3.0
-bertopic>=0.16.0
+hdbscan>=0.8.33
 
-# Modelos de Lenguaje (Sentimientos y Similitud Semántica)
-transformers>=4.35.0
+# Modelos de Lenguaje (Vectores Semánticos)
 sentence-transformers>=2.2.2
-torch>=2.1.0
 
-# Visualización Interactiva
+# Visualización Interactiva y Grafos
 plotly>=5.18.0
+networkx>=3.2.0
