@@ -1,232 +1,89 @@
-# =============================================================================
-# src/preprocesamiento.py
-# Motor de limpieza textual NLP.
-#
-# CONTRATO DE COLUMNAS:
-#   - comentario       -> texto original para visualización
-#   - comentario_nlp   -> texto stemmed para PCA/HDBSCAN
-#   - comentario_grafo -> texto limpio SIN stemming para NetworkX
-# =============================================================================
-
-import re
-import unicodedata
 import pandas as pd
+import re
 import nltk
-
 from nltk.corpus import stopwords
 from nltk.stem import SnowballStemmer
-from nltk.tokenize import word_tokenize
+import sys
+import os
+import gc
 
-# Recursos NLTK
-for recurso in ("punkt", "punkt_tab", "stopwords"):
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords', quiet=True)
+
+def _leer_datos_robusto(ruta: str) -> pd.DataFrame:
+    """
+    Detecta la extensión del archivo. Lee nativamente Parquet o aplica
+    el fallback robusto de codificación para archivos CSV.
+    """
+    ext = os.path.splitext(ruta)[1].lower()
     try:
-        nltk.download(recurso, quiet=True)
-    except Exception:
-        pass
+        if ext == '.parquet':
+            return pd.read_parquet(ruta)
+        else:
+            return pd.read_csv(ruta, encoding="utf-8")
+    except UnicodeDecodeError:
+        print(f" [WARN] Fallo de codificación UTF-8. Reintentando con latin-1: {ruta}", file=sys.stderr)
+        return pd.read_csv(ruta, encoding="latin-1", encoding_errors="replace")
+    except FileNotFoundError:
+        print(f" [ERROR] No se encontró el archivo: {ruta}", file=sys.stderr)
+        sys.exit(1)
 
-# Configuración
-_STEMMER_ES = SnowballStemmer("spanish")
-
-_STOP_WORDS = (
-    set(stopwords.words("spanish"))
-    | set(stopwords.words("english"))
-)
-
-_MIN_TOKEN_LEN = 3
-
-# Utilidades
-
-def _normalizar_unicode(texto: str) -> str:
-    return (
-        unicodedata.normalize("NFD", texto)
-        .encode("ascii", errors="ignore")
-        .decode("ascii")
+def _sanitizar_texto(df: pd.DataFrame, columna: str) -> pd.DataFrame:
+    df[columna] = df[columna].astype(str).str.strip()
+    df[columna] = df[columna].apply(
+        lambda x: x.encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")
     )
+    mascara_valida = (df[columna] != "") & (df[columna].str.lower() != "nan")
+    return df[mascara_valida].reset_index(drop=True)
 
+def cargar_datos(ruta_csv: str, columna_texto: str) -> pd.DataFrame:
+    df = _leer_datos_robusto(ruta_csv)
+    
+    cols_basura = [c for c in df.columns if str(c).startswith("Unnamed")]
+    if cols_basura:
+        df = df.drop(columns=cols_basura)
+        
+    if columna_texto not in df.columns:
+        print(f" [ERROR] La columna '{columna_texto}' no existe en el archivo.", file=sys.stderr)
+        sys.exit(1)
+        
+    df = df.dropna(subset=[columna_texto]).copy()
+    df = _sanitizar_texto(df, columna_texto)
+    return df
 
-def _limpiar_para_nlp(texto: str) -> str:
+def limpiar_texto(texto: str) -> str:
+    texto = str(texto).lower()
+    texto = re.sub(r'http\S+|www\S+|https\S+', '', texto, flags=re.MULTILINE)
+    texto = re.sub(r'\d+', '', texto)
+    return re.sub(r'[^\w\s]', '', texto).strip()
 
-    texto = texto.lower()
+def procesar_nlp(df: pd.DataFrame, columna_texto: str, idioma: str) -> pd.DataFrame:
+    mapa_idiomas = {'es': 'spanish', 'en': 'english', 'fr': 'french'}
+    idioma_nltk = mapa_idiomas.get(idioma)
+    
+    if not idioma_nltk:
+        print(f" [ERROR] Idioma '{idioma}' no soportado.", file=sys.stderr)
+        sys.exit(1)
 
-    texto = re.sub(r"http\S+|www\.\S+", " ", texto)
-    texto = re.sub(r"@\w+|#\w+", " ", texto)
+    stop_words = set(stopwords.words(idioma_nltk))
+    stemmer = SnowballStemmer(idioma_nltk)
 
-    texto = re.sub(r"[^a-záéíóúüñ\s]", " ", texto)
+    # 1. Pipeline con Stemming (Para matemáticas: HDBSCAN, UMAP)
+    def pipeline_texto(texto: str) -> str:
+        tokens = limpiar_texto(texto).split()
+        return " ".join([stemmer.stem(w) for w in tokens if w not in stop_words])
 
-    texto = re.sub(r"\s+", " ", texto).strip()
+    # 2. Pipeline sin Stemming (Para visualización legible: N-gramas)
+    def pipeline_grafo(texto: str) -> str:
+        tokens = limpiar_texto(texto).split()
+        return " ".join([w for w in tokens if w not in stop_words])
 
-    texto = _normalizar_unicode(texto)
-
-    return texto
-
-
-def _limpiar_para_grafo(texto: str) -> str:
-
-    texto = texto.lower()
-
-    texto = re.sub(r"http\S+|www\.\S+", " ", texto)
-    texto = re.sub(r"@\w+|#\w+", " ", texto)
-
-    # conserva acentos y ñ
-    texto = re.sub(r"[^a-záéíóúüñ\s]", " ", texto)
-
-    texto = re.sub(r"\s+", " ", texto).strip()
-
-    return texto
-
-
-def _tokenizar_y_filtrar(texto: str) -> list[str]:
-
-    tokens = word_tokenize(texto, language="spanish")
-
-    return [
-        token
-        for token in tokens
-        if token not in _STOP_WORDS
-        and len(token) >= _MIN_TOKEN_LEN
-    ]
-
-
-def _procesar_texto_nlp(texto: str) -> str:
-
-    texto_limpio = _limpiar_para_nlp(str(texto))
-
-    tokens = _tokenizar_y_filtrar(texto_limpio)
-
-    stems = [_STEMMER_ES.stem(t) for t in tokens]
-
-    resultado = " ".join(stems)
-
-    return resultado if resultado.strip() else "__vacio__"
-
-
-def _procesar_texto_grafo(texto: str) -> str:
-
-    texto_limpio = _limpiar_para_grafo(str(texto))
-
-    tokens = _tokenizar_y_filtrar(texto_limpio)
-
-    resultado = " ".join(tokens)
-
-    return resultado if resultado.strip() else "__vacio__"
-
-
-# API pública
-
-def preprocesar(
-    df: pd.DataFrame,
-    columna_visual: str = "comentario"
-):
-
-    if columna_visual not in df.columns:
-        raise ValueError(
-            f"Columna '{columna_visual}' no encontrada. "
-            f"Disponibles: {list(df.columns)}"
-        )
-
-    df_trabajo = df.copy()
-
-    # DEDUPLICACIÓN
-    total_antes = len(df_trabajo)
-
-    mascara_dup = df_trabajo.duplicated(
-        subset=[columna_visual],
-        keep="first"
-    )
-
-    df_duplicados = df_trabajo[mascara_dup].copy()
-
-    df_trabajo = (
-        df_trabajo[~mascara_dup]
-        .reset_index(drop=True)
-    )
-
-    n_dup = total_antes - len(df_trabajo)
-
-    if n_dup > 0:
-        print(
-            f"  [DEDUP] {n_dup} duplicado(s) eliminado(s). "
-            f"Únicos restantes: {len(df_trabajo)}"
-        )
-
-    # COLUMNAS NLP
-    df_trabajo["comentario_nlp"] = (
-        df_trabajo[columna_visual].copy()
-    )
-
-    df_trabajo["comentario_grafo"] = (
-        df_trabajo[columna_visual].copy()
-    )
-
-    # FILTRO DE NULOS
-    mascara_nulos = (
-        df_trabajo[columna_visual]
-        .astype(str)
-        .str.strip()
-        .isin(["", "nan", "None"])
-    )
-
-    df_outliers_nulos = (
-        df_trabajo[mascara_nulos]
-        .copy()
-    )
-
-    df_trabajo = (
-        df_trabajo[~mascara_nulos]
-        .reset_index(drop=True)
-    )
-
-    # PROCESAMIENTO NLP
-    print(
-        f"  [NLP] Procesando "
-        f"{len(df_trabajo)} registros únicos..."
-    )
-
-    df_trabajo["comentario_nlp"] = (
-        df_trabajo["comentario_nlp"]
-        .apply(_procesar_texto_nlp)
-    )
-
-    df_trabajo["comentario_grafo"] = (
-        df_trabajo["comentario_grafo"]
-        .apply(_procesar_texto_grafo)
-    )
-
-    # VACÍOS NLP
-    mascara_vacios = (
-        df_trabajo["comentario_nlp"] == "__vacio__"
-    )
-
-    df_outliers_nlp = (
-        df_trabajo[mascara_vacios]
-        .copy()
-    )
-
-    df_clasificado = (
-        df_trabajo[~mascara_vacios]
-        .reset_index(drop=True)
-    )
-
-    # CONSOLIDAR OUTLIERS
-    df_outliers = pd.concat(
-        [
-            df_duplicados,
-            df_outliers_nulos,
-            df_outliers_nlp,
-        ],
-        ignore_index=True,
-    )
-
-    print(
-        f"  [RESULT] Para modelado: {len(df_clasificado)} | "
-        f"Outliers totales: {len(df_outliers)} "
-        f"(dup={n_dup}, "
-        f"nulos={len(df_outliers_nulos)}, "
-        f"vacíos_nlp={len(df_outliers_nlp)})"
-    )
-
-    assert "comentario" in df_clasificado.columns
-    assert "comentario_nlp" in df_clasificado.columns
-    assert "comentario_grafo" in df_clasificado.columns
-
-    return df_clasificado, df_outliers
+    df_copy = df.copy()
+    df_copy['texto_limpio'] = df_copy[columna_texto].apply(pipeline_texto)
+    df_copy['comentario_grafo'] = df_copy[columna_texto].apply(pipeline_grafo)
+    
+    # Liberación explícita de RAM
+    gc.collect()
+    return df_copy

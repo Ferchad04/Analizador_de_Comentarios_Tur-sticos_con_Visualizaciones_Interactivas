@@ -1,178 +1,162 @@
-# =============================================================================
-# src/modelado.py
-# Motor matemático del pipeline NLP.
-#
-# CHANGELOG:
-#   - Eliminación total de la métrica y anclas de "Precio".
-#   - Refactorización de clasificador de sentimientos: Transición de similitud 
-#     coseno a Analizador Léxico (Rule-Based) para evitar falsos positivos.
-# =============================================================================
-
 import os
-import re
-import numpy as np
+# --- BLOQUEO ANTIDEADLOCK PARA MÁQUINAS VIRTUALES WINDOWS ---
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import pandas as pd
-import hdbscan
-
+import numpy as np
 from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.decomposition import PCA
+from sklearn.metrics.pairwise import cosine_similarity
+from transformers import pipeline
 from sentence_transformers import SentenceTransformer
-from joblib import Memory
+import hdbscan
+import umap.umap_ as umap
 from typing import Tuple, Dict
+from tqdm import tqdm
 
-# Sistema de caché joblib
-os.makedirs("cache_nlp", exist_ok=True)
-memoria = Memory("cache_nlp", verbose=0)
+# Instancia global para evitar recargas en memoria (Optimización de RAM)
+_encoder = None
 
-# Diccionarios Léxicos para Análisis de Sentimiento
-_POS_FUERTE = {
-    "excelente": 4,
-    "perfecto": 4,
-    "maravilloso": 4,
-    "espectacular": 4,
-    "increible": 4,
-    "increíble": 4,
-    "fantastico": 4,
-    "fantástico": 4,
-    "extraordinario": 4,
-    "impresionante": 4,
-    "magnifico": 4,
-    "magnífico": 4
-}
+def get_encoder():
+    global _encoder
+    if _encoder is None:
+        _encoder = SentenceTransformer('all-MiniLM-L6-v2')
+    return _encoder
 
-_POS_NORMAL = {
-    "bonito": 1,
-    "hermoso": 1,
-    "agradable": 1,
-    "limpio": 1,
-    "amable": 1,
-    "bueno": 1,
-    "comodas": 1,
-    "comodo": 1,
-    "cómodo": 1,
-    "tranquilo": 1,
-    "recomendable": 1,
-    "encanta": 1,
-    "encantó": 1,
-    "encanto": 1,
-    "agradó": 1,
-    "agradable": 1,
-    "lindo": 1,
-    "excelencia": 1
-}
+def detectar_outliers_y_ngramas(df: pd.DataFrame, columna_texto: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Detecta outliers semánticos usando HDBSCAN y extrae n-gramas de ruido.
+    """
+    if df.empty: return df, pd.DataFrame()
 
-_NEG_FUERTE = {
-    "terrible": 5,
-    "pesimo": 5,
-    "pésimo": 5,
-    "asqueroso": 6,
-    "estafa": 6,
-    "robo": 6,
-    "inseguro": 5,
-    "horrible": 5,
-    "decepcion": 5,
-    "decepción": 5,
-    "sucio": 5,
-    "apestoso": 5,
-    "asco": 6,
-    "fraude": 6,
-    "desastre": 5
-}
+    encoder = get_encoder()
+    
+    # Barra de progreso nativa para la generación de embeddings
+    print("  [Procesando vectores densos...]")
+    embeddings = encoder.encode(df['texto_limpio'].tolist(), show_progress_bar=True)
 
-_NEG_NORMAL = {
-    "caro": 2,
-    "lento": 2,
-    "ruidoso": 2,
-    "malo": 2,
-    "molesto": 2,
-    "deficiente": 2,
-    "falla": 2,
-    "fallas": 2,
-    "problema": 2,
-    "problemas": 2,
-    "regular": 2,
-    "incómodo": 2,
-    "incomodo": 2
-}
+    # UMAP: Reducción topológica a 2D para visualización (Forzado a 1 hilo)
+    n_neighbors = min(15, len(df) - 1) if len(df) > 2 else 2
+    reducer = umap.UMAP(n_neighbors=n_neighbors, n_components=2, metric='cosine', random_state=42, n_jobs=1)
+    coords = reducer.fit_transform(embeddings)
+    
+    df_copy = df.copy()
+    df_copy['x'] = coords[:, 0]
+    df_copy['y'] = coords[:, 1]
+    df_copy['embedding'] = list(embeddings)
 
-# Capa de embeddings (cacheada y forzada a CPU para clustering y PCA)
-@memoria.cache
-def obtener_embeddings(textos: list) -> np.ndarray:
-    modelo = SentenceTransformer(
-        "paraphrase-multilingual-MiniLM-L12-v2",
-        device="cpu",   
-    )
-    return modelo.encode(textos, show_progress_bar=True)
+    # HDBSCAN: Detección espacial por densidad (Ruido = cluster -1) (Forzado a 1 hilo)
+    min_cluster = min(3, len(df) // 2) if len(df) > 5 else 2
+    clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster, metric='euclidean', core_dist_n_jobs=1)
+    df_copy['cluster_hdbscan'] = clusterer.fit_predict(embeddings)
 
-# Funciones internas del pipeline
+    df_normal = df_copy[df_copy['cluster_hdbscan'] != -1].copy()
+    df_outliers = df_copy[df_copy['cluster_hdbscan'] == -1].copy()
 
-def detectar_outliers_y_ngramas(
-    df: pd.DataFrame, columna_texto: str
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    if df.empty:
-        return df, pd.DataFrame()
-
-    textos = df[columna_texto].tolist()
-    embeddings = obtener_embeddings(textos)
-
-    # Mantenemos el clustering ejecutándose por integridad matemática
-    clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=5,
-        min_samples=3,
-        gen_min_span_tree=True,
-    )
-    clusterer.fit(embeddings)
-
-    df_normal = df.copy()
-    df_outliers_vacios = pd.DataFrame()
-
-    return df_normal, df_outliers_vacios
+    # ---------------------------------------------------------
+    # Extracción de n-gramas para outliers (Ruido)
+    # ---------------------------------------------------------
+    if not df_outliers.empty:
+        
+        # CAMBIO CLAVE: Extraer de 'comentario_grafo' (palabras completas) 
+        # en lugar de la columna stemmizada para NLP.
+        textos_outliers = df_outliers['comentario_grafo'].tolist() 
+        
+        for n, label in zip([1, 2, 3], ['unigramas', 'bigramas', 'trigramas']):
+            try:
+                cv = CountVectorizer(ngram_range=(n, n), max_features=5)
+                cv.fit(textos_outliers)
+                df_outliers[f'top_{label}'] = ", ".join(cv.get_feature_names_out())
+            except ValueError:
+                df_outliers[f'top_{label}'] = "Insuficientes datos"
+                
+    return df_normal, df_outliers
 
 def clasificar_sentimientos(df: pd.DataFrame, columna_texto: str) -> pd.DataFrame:
-    def _score_polaridad(texto: str) -> str:
-        # Tokenizamos conservando el orden de las palabras
-        tokens = re.findall(r'\b\w+\b', str(texto).lower())
-        score = 0
-        inversores = {"no", "sin", "cero", "nunca", "tampoco", "nada"}
+    """
+    Clasificación robusta usando DistilBERT Multilingüe local.
+    Optimizada con Procesamiento por Lotes (Batching) y Deduplicación.
+    """
+    if df.empty:
+        df['sentimiento'] = None
+        return df
 
-        for i, t in enumerate(tokens):
-            # Ventana de lectura (lookback) de hasta 2 tokens atrás
-            es_negado = False
-            if i > 0 and tokens[i-1] in inversores:
-                es_negado = True
-            elif i > 1 and tokens[i-2] in inversores:
-                es_negado = True
-
-            peso = 0
-            if t in _POS_FUERTE: peso = 3
-            elif t in _POS_NORMAL: peso = 1
-            elif t in _NEG_FUERTE: peso = -4
-            elif t in _NEG_NORMAL: peso = -1
-
-            if peso != 0:
-                if es_negado:
-                    score -= peso  
-                else:
-                    score += peso
-
-        if score > 0: return "positivo"
-        if score < 0: return "negativo"
-        return "neutral"
-
+    # Inicialización del modelo (device=-1 fuerza uso de CPU)
+    classifier = pipeline("sentiment-analysis", model="lxyuan/distilbert-base-multilingual-cased-sentiments-student", device=-1)
+    
+    # 1. DEDUPLICACIÓN: Extraer solo los comentarios únicos para no procesar repetidos
+    textos_unicos = df[columna_texto].astype(str).unique().tolist()
+    print(f"  [Optimización] Se procesarán {len(textos_unicos)} textos únicos de un total de {len(df)}.")
+    
+    # 2. BATCHING: Pasar la lista completa al pipeline con batch_size=16
+    # El pipeline maneja la paralelización interna automáticamente
+    predicciones_unicas = []
+    generador_pipeline = classifier(textos_unicos, truncation=True, max_length=512, batch_size=16)
+    
+    for res in tqdm(generador_pipeline, total=len(textos_unicos), desc="Clasificando Sentimientos", unit="lote"):
+        predicciones_unicas.append(res)
+        
+    # 3. MAPEADO: Crear un diccionario con los resultados y aplicarlo al dataset original
+    mapa_resultados = {texto: res['label'] for texto, res in zip(textos_unicos, predicciones_unicas)}
+    mapping = {'positive': 'positivo', 'negative': 'negativo', 'neutral': 'negativo'}
+    
     df_copy = df.copy()
-    df_copy["sentimiento"] = df_copy[columna_texto].apply(_score_polaridad)
+    # Asignar el sentimiento a cada fila buscando en nuestro diccionario en memoria (operación instantánea)
+    df_copy['sentimiento'] = df_copy[columna_texto].astype(str).map(lambda x: mapping.get(mapa_resultados[x], 'negativo'))
+    
     return df_copy
 
-def extraer_red_semantica(df: pd.DataFrame, columna_texto: str) -> dict:
-    if df.empty or columna_texto not in df.columns:
+def modelar_topicos(df: pd.DataFrame, columna_texto: str, umbral: int = 5) -> Dict[str, dict]:
+    """
+    Agrupa comentarios por sentimiento y extrae tópicos mediante los clusters de HDBSCAN.
+    """
+    resultados = {'positivo': {}, 'negativo': {}}
+    
+    for sent in ['positivo', 'negativo']:
+        df_sent = df[df['sentimiento'] == sent]
+        
+        if len(df_sent) < umbral:
+            if not df_sent.empty:
+                cv = CountVectorizer(max_features=5)
+                cv.fit(df_sent['texto_limpio'])
+                resultados[sent] = {
+                    'metodo': 'frecuencia',
+                    'palabras_clave': list(cv.get_feature_names_out()),
+                    'comentario_representativo': df_sent[columna_texto].iloc[0]
+                }
+        else:
+            topicos_dict = {}
+            for c_id in df_sent['cluster_hdbscan'].unique():
+                df_cluster = df_sent[df_sent['cluster_hdbscan'] == c_id]
+                
+                cv = CountVectorizer(max_features=3)
+                cv.fit(df_cluster['texto_limpio'])
+                
+                embs = np.vstack(df_cluster['embedding'].values)
+                centroide = embs.mean(axis=0)
+                distancias = [np.linalg.norm(emb - centroide) for emb in embs]
+                
+                topicos_dict[f'topico_{c_id}'] = {
+                    'palabras_clave': list(cv.get_feature_names_out()),
+                    'comentario_representativo': df_cluster[columna_texto].iloc[np.argmin(distancias)]
+                }
+            resultados[sent] = {'metodo': 'hdbscan', 'topicos': topicos_dict}
+            
+    return resultados
+
+def extraer_red_semantica(df: pd.DataFrame) -> dict:
+    """
+    Extrae la matriz de co-ocurrencia para generar un grafo semántico.
+    """
+    if df.empty:
         return {"nodos": [], "enlaces": []}
 
-    vectorizer = CountVectorizer(
-    max_features=50,
-    min_df=2
-    )
+    vectorizer = CountVectorizer(max_features=30, min_df=2)
     try:
-        X = vectorizer.fit_transform(df[columna_texto].dropna())
+        X = vectorizer.fit_transform(df['texto_limpio'].dropna())
     except ValueError:
         return {"nodos": [], "enlaces": []}
 
@@ -180,13 +164,11 @@ def extraer_red_semantica(df: pd.DataFrame, columna_texto: str) -> dict:
     co_ocurrencia = (X.T * X).toarray()
     np.fill_diagonal(co_ocurrencia, 0)
 
-    # Cálculo de umbral dinámico: Retener solo el 15% de las conexiones más fuertes
     valores_activos = co_ocurrencia[co_ocurrencia > 0]
     if len(valores_activos) == 0:
         return {"nodos": palabras.tolist(), "enlaces": []}
     
     umbral_dinamico = np.percentile(valores_activos, 85)
-
     nodos = palabras.tolist()
     enlaces = []
 
@@ -194,75 +176,24 @@ def extraer_red_semantica(df: pd.DataFrame, columna_texto: str) -> dict:
         for j in range(i + 1, len(nodos)):
             peso = co_ocurrencia[i, j]
             if peso >= umbral_dinamico and peso > 0:
-                enlaces.append({
-                    "fuente": nodos[i],
-                    "destino": nodos[j],
-                    "peso": int(peso),
-                })
+                enlaces.append({"fuente": nodos[i], "destino": nodos[j], "peso": int(peso)})
 
     return {"nodos": nodos, "enlaces": enlaces}
 
-def _calcular_pca_2d(df: pd.DataFrame, columna_texto: str) -> dict:
-    if df.empty or "sentimiento" not in df.columns or len(df) < 3:
-        return {"componentes": [], "etiquetas": []}
+def analizar_similitud_precio(df: pd.DataFrame, columna_texto: str) -> pd.DataFrame:
+    """
+    OBLIGATORIO: Análisis de costo/precio mediante similitud del coseno.
+    """
+    if df.empty:
+        df['similitud_precio_costo'] = None
+        return df
 
-    textos     = df[columna_texto].tolist()
-    embeddings = obtener_embeddings(textos)     
-    n_componentes  = min(2, embeddings.shape[0], embeddings.shape[1])
-    pca            = PCA(n_components=n_componentes)
-    componentes_2d = pca.fit_transform(embeddings)
-
-    return {
-        "componentes": componentes_2d.tolist(),
-        "etiquetas":   df["sentimiento"].tolist(),
-    }
-
-# Función maestra pública
-
-def ejecutar(df_clasificado: pd.DataFrame, nombre_destino: str = "") -> dict:
-    tag = f"[{nombre_destino}] " if nombre_destino else ""
-    print(f"  {tag}Iniciando pipeline de modelado ({len(df_clasificado)} registros)...")
-
-    # 1. Detección de ruido
-    print(f"  {tag}[1/3] HDBSCAN — detección de ruido semántico...")
-    df_normal, df_outliers_sem = detectar_outliers_y_ngramas(
-        df_clasificado, columna_texto="comentario_nlp"
-    )
-    ngramas_ruido = df_outliers_sem.attrs.get("ngramas_ruido", {})
+    encoder = get_encoder()
+    embedding_concepto = encoder.encode(["precio valor costo"])
+    embeddings_textos = np.vstack(df['embedding'].values)
     
-    print(f"  {tag}  → Coherentes: {len(df_normal)} | Ruido: {len(df_outliers_sem)}")
-
-
-
-    # 2. Sentimientos (Basado en reglas léxicas)
-    print(f"  {tag}[2/3] Clasificando sentimientos (Análisis Léxico)...")
-    df_con_sentimiento = clasificar_sentimientos(df_normal, columna_texto="comentario")
-    dist = df_con_sentimiento["sentimiento"].value_counts().to_dict()
-    print(f"  {tag}  → Distribución: {dist}")
-
-    # 3. Red semántica + PCA
-    print(f"  {tag}[3/3] Red semántica y proyección PCA...")
-
-    datos_red = extraer_red_semantica(
-        df_con_sentimiento,
-        columna_texto="comentario_grafo"
-    )
-
-    datos_pca = _calcular_pca_2d(
-        df_con_sentimiento,
-        columna_texto="comentario_nlp"
-    )
-
-    print(
-        f"  {tag}Modelado completo. "
-        f"Nodos: {len(datos_red['nodos'])} | "
-        f"Aristas: {len(datos_red['enlaces'])}"
-    )
-
-    return {
-        "df_procesado": df_con_sentimiento,
-        "df_outliers_semanticos": df_outliers_sem,
-        "datos_red": datos_red,
-        "pca": datos_pca,
-        "ngramas_ruido": ngramas_ruido,
-    }
+    similitudes = cosine_similarity(embeddings_textos, embedding_concepto).flatten()
+    
+    df_copy = df.copy()
+    df_copy['similitud_precio_costo'] = similitudes
+    return df_copy.drop(columns=['embedding'])
