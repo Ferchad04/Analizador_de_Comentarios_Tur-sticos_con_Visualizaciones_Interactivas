@@ -9,13 +9,13 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Directorios de Jupyter (si usaste notebooks para pruebas)
+# Directorios de Jupyter
 .ipynb_checkpoints/
 
-# Caché pesada del proyecto (ESTRICTAMENTE PROHIBIDO SUBIR)
+# Caché pesada del proyecto
 cache_nlp/
 
-# Reportes generados (El evaluador debe correr el código para generarlos)
+# Reportes generados
 reporte_ejecutivo_*.html
 
 # Archivos del sistema operativo
