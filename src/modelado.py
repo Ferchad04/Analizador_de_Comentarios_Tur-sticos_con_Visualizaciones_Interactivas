@@ -29,16 +29,17 @@ def get_encoder():
 def detectar_outliers_y_ngramas(df: pd.DataFrame, columna_texto: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Detecta outliers semánticos usando HDBSCAN y extrae n-gramas de ruido.
+    Corrige la maldición de la dimensionalidad evaluando sobre UMAP 2D.
     """
     if df.empty: return df, pd.DataFrame()
 
     encoder = get_encoder()
     
-    # Barra de progreso nativa para la generación de embeddings
-    print("  [Procesando vectores densos...]")
+    print("  [FASE 2A] Procesando vectores densos (Embeddings)...")
     embeddings = encoder.encode(df['texto_limpio'].tolist(), show_progress_bar=True)
 
-    # UMAP: Reducción topológica a 2D para visualización (Forzado a 1 hilo)
+    # UMAP: Reducción topológica a 2D para visualización
+    print("  [FASE 2B] Reduciendo dimensiones espaciales con UMAP...")
     n_neighbors = min(15, len(df) - 1) if len(df) > 2 else 2
     reducer = umap.UMAP(n_neighbors=n_neighbors, n_components=2, metric='cosine', random_state=42, n_jobs=1)
     coords = reducer.fit_transform(embeddings)
@@ -48,23 +49,29 @@ def detectar_outliers_y_ngramas(df: pd.DataFrame, columna_texto: str) -> Tuple[p
     df_copy['y'] = coords[:, 1]
     df_copy['embedding'] = list(embeddings)
 
-    # HDBSCAN: Detección espacial por densidad (Ruido = cluster -1) (Forzado a 1 hilo)
+    # HDBSCAN: Detección espacial por densidad (Ruido = cluster -1)
+    print("  [FASE 2C] Calculando densidades y agrupando ruido con HDBSCAN...")
     min_cluster = min(3, len(df) // 2) if len(df) > 5 else 2
     clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster, metric='euclidean', core_dist_n_jobs=1)
-    df_copy['cluster_hdbscan'] = clusterer.fit_predict(embeddings)
+    
+    # === CORRECCIÓN CLAVE ===
+    # Alimentamos HDBSCAN con 'coords' (2D) en lugar de 'embeddings' (384D)
+    df_copy['cluster_hdbscan'] = clusterer.fit_predict(coords)
 
     df_normal = df_copy[df_copy['cluster_hdbscan'] != -1].copy()
     df_outliers = df_copy[df_copy['cluster_hdbscan'] == -1].copy()
 
-    # ---------------------------------------------------------
-    # Extracción de n-gramas para outliers (Ruido)
-    # ---------------------------------------------------------
+    # === MECANISMO ANTICOLAPSO ===
+    # Si la dispersión es extrema y todo se etiquetó como ruido, forzamos la retención de los datos.
+    if df_normal.empty and not df_copy.empty:
+        print("  [Alerta] Dispersión extrema: HDBSCAN no detectó clústeres densos. Reteniendo dataset completo.")
+        df_copy['cluster_hdbscan'] = 0  # Forzamos un clúster base
+        df_normal = df_copy.copy()
+        df_outliers = pd.DataFrame()
+
+    # Extracción de N-gramas para el ruido residual
     if not df_outliers.empty:
-        
-        # CAMBIO CLAVE: Extraer de 'comentario_grafo' (palabras completas) 
-        # en lugar de la columna stemmizada para NLP.
-        textos_outliers = df_outliers['comentario_grafo'].tolist() 
-        
+        textos_outliers = df_outliers['comentario_grafo'].tolist()
         for n, label in zip([1, 2, 3], ['unigramas', 'bigramas', 'trigramas']):
             try:
                 cv = CountVectorizer(ngram_range=(n, n), max_features=5)
@@ -72,7 +79,7 @@ def detectar_outliers_y_ngramas(df: pd.DataFrame, columna_texto: str) -> Tuple[p
                 df_outliers[f'top_{label}'] = ", ".join(cv.get_feature_names_out())
             except ValueError:
                 df_outliers[f'top_{label}'] = "Insuficientes datos"
-                
+
     return df_normal, df_outliers
 
 def clasificar_sentimientos(df: pd.DataFrame, columna_texto: str) -> pd.DataFrame:
