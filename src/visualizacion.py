@@ -153,6 +153,7 @@ def generar_reporte(df_clasificado: pd.DataFrame, df_outliers: pd.DataFrame, res
             body {{ background-color: #121212; color: #ffffff; font-family: Arial, sans-serif; margin: 20px; }}
             .container {{ max-width: 1200px; margin: 0 auto; }}
             .header {{ text-align: center; padding: 20px; background-color: #1e1e1e; border-bottom: 3px solid #333; margin-bottom: 20px; }}
+            .authors {{ color: #aaa; font-size: 0.9em; margin-top: 10px; }}
             .section {{ background-color: #1a1a1a; padding: 20px; margin-bottom: 20px; border-radius: 5px; border: 1px solid #2d2d2d; }}
             .row {{ display: flex; flex-wrap: wrap; gap: 20px; }}
             .col-6 {{ flex: 1; min-width: 45%; }}
@@ -164,6 +165,12 @@ def generar_reporte(df_clasificado: pd.DataFrame, df_outliers: pd.DataFrame, res
             <div class="header">
                 <h1>{titulo_reporte}</h1>
                 <p>Pipeline Analítico de Sentimientos y Modelado de Tópicos Espaciales</p>
+                <div class="authors">
+                    <strong>Desarrollado por:</strong><br>
+                    Juan Fernando Santillan Rivera (santillanfernando491@gmail.com) &bull; 
+                    Isaac Pérez Pérez (isaacpp6954@gmail.com) &bull; 
+                    Luis Arturo Hernández Guevara (luis.hdez.gue.05@gmail.com)
+                </div>
             </div>
 
             <div class="section">
