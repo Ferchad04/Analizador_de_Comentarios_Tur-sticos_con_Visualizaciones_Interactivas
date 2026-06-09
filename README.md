@@ -1,53 +1,83 @@
-# Pipeline NLP Turístico: Análisis de Reseñas y Topología Semántica
+# Pipeline NLP Turístico: Análisis de Reseñas y Topología Semántica (Alta Eficiencia)
 
-Este proyecto implementa una arquitectura de procesamiento de lenguaje natural (NLP) diseñada para la auditoría de experiencias turísticas a partir de reseñas de usuarios. 
+Este proyecto implementa una arquitectura avanzada de procesamiento de lenguaje natural (NLP) y Machine Learning espacial diseñada para la auditoría de experiencias turísticas a partir de reseñas masivas de usuarios.
 
-El sistema ingesta datasets en formato CSV, aplica limpieza de datos, extrae polaridad de sentimientos mediante un clasificador léxico ponderado y reduce la dimensionalidad de tensores para proyectar agrupaciones semánticas en un Dashboard HTML interactivo y 100% offline.
+El sistema ingesta datasets (optimizados en formato Parquet o CSV), aplica sanitización de datos con control estricto de memoria RAM, extrae polaridad de sentimientos mediante redes neuronales Transformer (`DistilBERT`), y reduce la dimensionalidad de tensores matemáticos para proyectar agrupaciones semánticas (`HDBSCAN` + `UMAP`) en Dashboards HTML interactivos, seguros y accesibles.
 
 ## Arquitectura del Sistema
 
-El pipeline se divide en tres capas principales operando de manera secuencial:
+El pipeline ha sido refactorizado a un estándar de grado de producción, operando en tres capas principales diseñadas para entornos con hardware restringido (máquinas virtuales):
 
-### 1. Preprocesamiento (`src/preprocesamiento.py`)
-- **Deduplicación:** Eliminación estricta de registros duplicados idénticos para evitar sesgos estadísticos en el modelado.
-- **Bifurcación de Tokens:** Generación de un corpus truncado (`comentario_nlp`, con *stemming* y sin tildes) para eficiencia matemática en HDBSCAN y PCA, y preservación del texto original limpio (`comentario_grafo`) para garantizar la legibilidad humana en la topología de red.
+### 1. Preprocesamiento y Control de Memoria (`src/preprocesamiento.py`)
+
+* **Gestión Activa de RAM:** Uso explícito de recolección de basura (`gc.collect()`) para destruir tensores y dataframes intermedios, evitando la paginación del sistema operativo.
+* **Muestreo Estadístico Representativo:** Implementación de un límite de seguridad (6,000 registros aleatorios) para prevenir el colapso del renderizado web y estabilizar el cálculo espacial matricial.
+* **Bifurcación Léxica:** Creación de un corpus con *Stemming* para el cálculo eficiente de distancias euclidianas/coseno, manteniendo simultáneamente una columna intacta (`comentario_grafo`) para garantizar la legibilidad humana en la extracción de N-gramas.
 
 ### 2. Modelado Matemático (`src/modelado.py`)
-- **Agrupamiento Semántico:** Uso de `SentenceTransformers` (forzado a CPU) y `HDBSCAN` para detección de ruido estructural y anomalías espaciales.
-- **Clasificador de Sentimientos:** Sistema determinista basado en reglas (Analizador Léxico Ponderado). Utiliza diccionarios de alta densidad organizados en niveles de intensidad (ej. *Fuerte* vs *Normal*) combinados con ventanas de retroceso (*lookback windows*) para identificar inversiones de polaridad (ej. negaciones antes de adjetivos).
-- **Topología de Red:** Generación de matriz de co-ocurrencia extraída mediante `CountVectorizer` y estructurada con `NetworkX`. Implementa un umbral dinámico basado en percentiles para evitar la saturación visual en *datasets* masivos.
-- **Caché Computacional:** Integración de `joblib` para persistir tensores pesados en disco (`cache_nlp/`) y minimizar drásticamente la latencia en re-ejecuciones.
+
+* **Vectorización y Reducción Topológica:** Uso de `SentenceTransformers` (MiniLM) para la generación de embeddings densos. Compresión a un plano bidimensional mediante `UMAP` operando en mono-núcleo (`n_jobs=1`) para erradicar bloqueos mutuos (*deadlocks*) en la CPU.
+* **Clustering por Densidad Tolerante:** Aplicación de `HDBSCAN` directamente sobre el plano 2D para evadir la "Maldición de la Dimensionalidad" en datasets pequeños, con mecanismos anticolapso para retener datos ante dispersión extrema.
+* **Clasificador de Sentimientos Acelerado:** Motor `DistilBERT` optimizado mediante *Batching* (lotes de 16), deduplicación algorítmica de cadenas repetidas y truncamiento dinámico (`max_length=512`) para tolerancia a fallos por secuencias atípicas.
+* **Análisis de Costo-Valor:** Cálculo de Similitud del Coseno entre los embeddings vectoriales de los comentarios y el concepto específico de "precio/costo/valor".
 
 ### 3. Inteligencia de Negocios (`src/visualizacion.py`)
-- **Renderizado Dinámico:** Generación de componentes interactivos (Dona, Scatter 2D, Grafo) utilizando `Plotly`.
-- **Despliegue Autónomo:** Inyección directa del bundle de JavaScript en el documento, garantizando que el entregable final sea un HTML estático, independiente y libre de dependencias a CDNs externos.
+
+* **Renderizado Aislado Seguro:** Generación de componentes Plotly utilizando inyección de dependencias externas (`include_plotlyjs='cdn'`) para prevenir condiciones de carrera (Race Conditions) al abrir archivos HTML locales.
+* **Estándares de Accesibilidad:** Abandono del espectro problemático rojo-verde a favor de paletas categóricas de alto contraste lumínico (Azul y Naranja para polaridad), combinadas con mapas de color continuos unificados (`viridis`, `cividis`, `plasma`, `inferno`).
+* **Despliegue Multi-Destino:** Generación automatizada de reportes HTML individuales por destino turístico (Huatulco, La Paz, Puerto Vallarta, Riviera Maya, Riviera Nayarit) sin sobreescritura, integrando tablas de componentes reactivos.
+
+---
 
 ## Requisitos y Configuración
 
-El proyecto fue desarrollado y validado en Python 3.10+. Para replicar el entorno de ejecución, instale las dependencias contenidas en `requirements.txt`:
+El proyecto requiere **Python 3.10+**. Para replicar el entorno de ejecución, instale las dependencias contenidas en `requirements.txt`:
 
 ```bash
 pip install -r requirements.txt
+
 ```
 
-*Nota inicial: Al ejecutarse por primera vez, el sistema descargará automáticamente el modelo multilingüe de `sentence-transformers` y los corpus requeridos por `nltk` (`punkt`, `stopwords`).*
+*Nota: Durante la primera ejecución, el sistema descargará automáticamente los pesos de los modelos de Hugging Face y los corpus requeridos por NLTK.*
 
 ## Ejecución del Pipeline
 
-Coloque los datasets en la carpeta `data/` respetando el formato CSV y asegurando la existencia de la columna objetivo de texto crudo (configurada por defecto en el código).
+Los datasets deben colocarse en la carpeta `data/`. El sistema ofrece dos modalidades de ejecución según los requisitos del proyecto:
 
-Ejecute el orquestador principal desde la raíz del proyecto:
+**Opción A: Ejecución Individual (Cumplimiento de los 5 parámetros)**
+Permite ejecutar el orquestador principal de manera quirúrgica, inyectando los parámetros requeridos desde la terminal:
 
 ```bash
-python src/main.py
+python src/main.py data/huatulco.csv Comentarios es "Reporte Huatulco" viridis
+
 ```
 
-Los tableros ejecutivos serán generados en el directorio actual con el prefijo `reporte_ejecutivo_` en formato `.html`.
+**Opción B: Procesamiento por Lotes**
+Utiliza el script disparador para mapear y procesar iterativamente los 5 destinos turísticos, liberando memoria entre cada ejecución:
+
+```bash
+python ejecutar_lote.py
+
+```
+
+*Los tableros ejecutivos interactivos se generarán de forma autónoma en el directorio `data/`.*
+
+---
 
 ## Consideraciones Teóricas y Limitaciones Conocidas
 
-Para efectos de auditoría técnica académica, se declaran las siguientes limitaciones de la arquitectura implementada:
+Para efectos de auditoría técnica académica, se declaran las siguientes decisiones de ingeniería:
 
-* **Ceguera Sintáctica Profunda:** El clasificador de sentimientos emplea una arquitectura *Bag-of-Words* combinada con pesos heurísticos. Aunque es altamente preciso en reseñas cortas gracias a la *lookback window*, es susceptible a dependencias sintácticas largas o sarcasmo complejo que un modelo de *Deep Learning* puro (tipo RoBERTa) sí capturaría. Esta decisión fue pragmática para garantizar rendimiento computacional en CPU y evitar la clasificación errónea por falsos contextos semánticos del Transformer original.
-* **Agresividad de HDBSCAN:** Parámetros como `min_cluster_size` fueron ajustados para optimizar la representación espacial. En la versión actual, se neutralizó la eliminación destructiva de `HDBSCAN` en la capa de modelado, preservando el 100% de la limpieza inicial del ETL para evitar la pérdida de representatividad estadística (Hemorragia de Datos) en corpus con vocabularios muy dispersos.
-* **Ausencia de Series Temporales:** Debido a la naturaleza estática de los datasets extraídos en la fase de origen, el modelo omite el análisis longitudinal, limitando la capacidad de identificar estacionalidades operativas en la industria turística.
+1. **Hardware vs Volumen (Muestreo a 6,000 registros):** Procesar más de 40,000 filas con Transformers locales y clustering espacial genera rendimientos decrecientes y un producto inoperable para el navegador web. El límite implementado asegura la validez estadística manteniendo la fluidez a 60 FPS en el cliente final.
+2. **Prevención de Deadlocks en CPU:** El forzado de `UMAP` y `HDBSCAN` a operar en un solo hilo computacional (`n_jobs=1`) fue una decisión deliberada frente a la paralelización. Esto incrementa ligeramente el tiempo por iteración, pero garantiza el 100% de estabilidad y completitud en entornos virtualizados o con recursos restringidos (evitando congelamientos permanentes).
+3. **Evaluación Espacial en 2D:** Alimentar a HDBSCAN con el plano previamente reducido por UMAP en lugar de la matriz tensorial original de 384 dimensiones resolvió el colapso del clasificador al procesar los archivos individuales de menor volumen.
+
+---
+
+## Créditos y Equipo de Desarrollo
+
+Arquitectura y refactorización del pipeline desarrolladas por:
+
+* **Juan Fernando Santillan Rivera** (`santillanfernando491@gmail.com`)
+* **Isaac Pérez Pérez** (`isaacpp6954@gmail.com`)
+* **Luis Arturo Hernández Guevara** (`luis.hdez.gue.05@gmail.com`)
